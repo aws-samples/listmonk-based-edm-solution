@@ -50,7 +50,7 @@ This stack use cloudformation file to provide configuration values.
 You can customize your parameters via cloudfromation console
 
 ## Deployment
-You can use the cloudformation [template](https://github.com/aws-samples/listmonk-based-edm-solution/blob/main/listmonk-based-edm-solution.yaml)
+You can use the cloudformation [template](https://github.com/aws-samples/listmonk-based-edm-solution/blob/main/listmonk-based-edm-solution.yaml) create stack in cloudfromation console.
 
 ## Clean up
 
