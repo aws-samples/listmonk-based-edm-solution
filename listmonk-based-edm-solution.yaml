@@ -219,7 +219,7 @@ Resources:
           psql -c "DELETE FROM subscribers WHERE id = 2;"
           psql -c "INSERT INTO subscriber_lists as sl (subscriber_id, list_id) VALUES(3, 1);"
 
-          wget https://gist.githubusercontent.com/magigo/f7bc6404671042256e2ec24ec6d88a88/raw/c543e7d9b5dd2f24489bf97457cf8e2e83ec3b1a/smtp_credentials_generate.py -P /home/ec2-user
+          wget https://raw.githubusercontent.com/aws-samples/listmonk-based-edm-solution/main/smtp_credentials_generate.py -P /home/ec2-user
           SMTP_password=$(python3 /home/ec2-user/smtp_credentials_generate.py  '${EDMCredentials.SecretAccessKey}' '${AWS::Region}')
 
           psql -c "UPDATE settings SET value = '[{\"host\": \"email-smtp.${AWS::Region}.amazonaws.com\", \"port\": 465, \"uuid\": \"c1d9239a-7ce2-43b0-a205-4889638bb5be\", \"enabled\": true, \"password\": \"$SMTP_password\", \"tls_type\": \"TLS\", \"username\": \"${EDMCredentials}\", \"max_conns\": 10, \"idle_timeout\": \"15s\", \"wait_timeout\": \"5s\", \"auth_protocol\": \"login\",\"email_headers\": [], \"hello_hostname\": \"\", \"max_msg_retries\": 2, \"tls_skip_verify\": false}, {\"host\": \"smtp.gmail.com\", \"port\": 465, \"uuid\": \"5dc797dc-5d9f-4d68-9c7e-3e11da4a70d6\", \"enabled\": false, \"password\": \"password\", \"tls_type\": \"TLS\", \"username\": \"username@gmail.com\", \"max_conns\": 10, \"idle_timeout\": \"15s\", \"wait_timeout\": \"5s\", \"auth_protocol\": \"login\", \"email_headers\": [], \"hello_hostname\": \"\", \"max_msg_retries\": 2, \"tls_skip_verify\": false}]' WHERE key='smtp';"
