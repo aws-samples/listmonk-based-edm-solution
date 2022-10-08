@@ -1,0 +1,547 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Amazon Simple Email Service based EDM solution
+Mappings:
+  InstanceMappings:
+    t3.micro:
+      DBInstanceType: db.t3.micro
+        
+    t3.small:
+      DBInstanceType: db.t3.small
+
+    c5.xlarge:
+      DBInstanceType: db.t3.medium
+        
+Metadata:
+  'AWS::CloudFormation::Interface':
+    ParameterGroups:
+      - Label:
+          default: Required
+        Parameters:
+          - DisplayName
+          - DisplayEmail
+          - InstanceType
+          - LoginUser
+          - LoginPassword
+      - Label:
+          default: Keep Default
+        Parameters:
+          - LatestAmiId
+Parameters:
+  InstanceType:
+    Type: String
+    AllowedValues:
+      - t3.micro
+      - t3.small
+      - c5.xlarge
+    Default: t3.small
+  LatestAmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+  DisplayEmail:
+    Type: String
+    AllowedPattern: '.+@.+'
+    ConstraintDescription: You should enter a valid email
+  DisplayName:
+    Type: String
+    Default: admin
+  LoginUser:
+    Type: String
+    Default: admin
+  LoginPassword:
+    Type: String
+    Default: admin
+
+Resources:
+  SESEmailIdentity:
+    Type: AWS::SES::EmailIdentity
+    Properties:
+      EmailIdentity: !Ref DisplayEmail
+  EDMSESUser:
+    Type: AWS::IAM::User
+    Properties:
+      Path: /edm/
+      UserName: !Ref AWS::StackName
+      Policies:
+      - PolicyName: edmsespolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - ses:SendRawEmail
+            Resource:
+            - '*'
+  EDMCredentials:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      Status: Active
+      UserName: !Ref EDMSESUser
+
+  WebServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: 'Enable HTTP access via port 80'
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+  WebServerInstance:
+    Type: AWS::EC2::Instance
+    CreationPolicy: # <--- creation policy with timeout of 15 minutes
+      ResourceSignal:
+        Timeout: PT15M
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref PublicSubnet0
+      BlockDeviceMappings: 
+        - DeviceName: "/dev/xvda"
+          Ebs: 
+            VolumeType: "gp3"
+            DeleteOnTermination: "true"
+            VolumeSize: "30"
+      SecurityGroupIds:
+        - !Ref WebServerSecurityGroup
+      Tags:
+        - Key: Name
+          Value: EDM-Server
+      UserData:
+        Fn::Base64: 
+          !Sub |
+          #!/bin/bash -xe
+
+          tee -a /home/ec2-user/config.toml > /dev/null  << EOT
+          [app]
+          # Interface and port where the app will run its webserver.  The default value
+          # of localhost will only listen to connections from the current machine. To
+          # listen on all interfaces use '0.0.0.0'. To listen on the default web address
+          # port, use port 80 (this will require running with elevated permissions).
+          address = "0.0.0.0:9000"
+
+          # BasicAuth authentication for the admin dashboard. This will eventually
+          # be replaced with a better multi-user, role-based authentication system.
+          # IMPORTANT: Leave both values empty to disable authentication on admin
+          # only where an external authentication is already setup.
+          admin_username = "${LoginUser}"
+          admin_password = "${LoginPassword}"
+
+          # Database.
+          [db]
+          host = "${EDMDB.Endpoint.Address}"
+          port = 5432
+          user = "postgres"
+          password = "d5bb#73f10Db7"
+
+          # Ensure that this database has been created in Postgres.
+          database = "listmonk"
+
+          ssl_mode = "disable"
+          max_open = 25
+          max_idle = 25
+          max_lifetime = "300s"
+          EOT
+
+          chown ec2-user:ec2-user /home/ec2-user/config.toml
+
+          tee -a /etc/systemd/system/listmonk.service > /dev/null  << EOT
+          # /etc/systemd/system/listmonk.service
+          [Unit]
+          Description = Listmonk
+          After = network.target
+
+          [Service]
+          PermissionsStartOnly = true
+          PIDFile = /run/sampleapp/sampleapp.pid
+          User=ec2-user
+          Group=ec2-user
+          WorkingDirectory=/home/ec2-user
+          ExecStartPre = /bin/mkdir /run/sampleapp
+          ExecStartPre = /bin/chown -R ec2-user:ec2-user /run/sampleapp
+          ExecStart=/home/ec2-user/listmonk
+          ExecReload = /bin/kill -s HUP \$MAINPID
+          ExecStop = /bin/kill -s TERM \$MAINPID
+          ExecStopPost = /bin/rm -rf /run/sampleapp
+          PrivateTmp = true
+
+          [Install]
+          WantedBy = multi-user.target
+          EOT
+
+          chown ec2-user:ec2-user /etc/systemd/system/listmonk.service
+
+          mkdir -p /home/ec2-user/uploads
+          chown ec2-user:ec2-user /home/ec2-user/uploads
+
+          yum update -y 
+          amazon-linux-extras install nginx1 -y
+
+          tee -a /etc/nginx/default.d/listmonk.conf > /dev/null  << EOT
+          location / {
+            proxy_pass http://localhost:9000;
+            proxy_set_header X-Real-IP \$remote_addr;
+          }
+          EOT
+
+          chown ec2-user:ec2-user /etc/nginx/default.d/listmonk.conf
+
+          wget https://github.com/knadh/listmonk/releases/download/v2.2.0/listmonk_2.2.0_linux_amd64.tar.gz -P /home/ec2-user
+          tar -xvf /home/ec2-user/listmonk_2.2.0_linux_amd64.tar.gz -C /home/ec2-user/
+          chown ec2-user:ec2-user /home/ec2-user/listmonk
+          systemctl enable --now nginx
+
+          amazon-linux-extras  install postgresql13  -y
+
+          export PGHOST=${EDMDB.Endpoint.Address}
+          export PGPORT=5432
+          export PGPASSWORD=d5bb#73f10Db7
+          export PGUSER=postgres
+          
+          psql -c "CREATE DATABASE listmonk"
+          /home/ec2-user/listmonk --install --yes --config /home/ec2-user/config.toml
+
+          export PGDATABASE=listmonk
+
+          psql -c "UPDATE settings SET value = '\"http://${IPAddress}\"' WHERE key = 'app.root_url';"
+          psql -c "UPDATE settings SET value = '\"zh-CN\"' WHERE key = 'app.lang';"
+          psql -c "UPDATE settings SET value = '\"${DisplayName} <${DisplayEmail}>\"' WHERE key = 'app.from_email';"
+          psql -c "UPDATE settings SET value = '[\"${DisplayEmail}\"]' WHERE key = 'app.notify_emails';"
+          psql -c "UPDATE campaigns SET from_email = '${DisplayName} <${DisplayEmail}>' WHERE id = 1;"
+          psql -c "INSERT INTO subscribers as s (uuid, email, name, attribs, status) VALUES(uuid_in(md5(random()::text || random()::text)::cstring), '${DisplayEmail}', 'Demo Name', '{\"city\": \"Beijing\", \"good\": true, \"type\": \"known\"}', 'enabled');"
+          psql -c "DELETE FROM subscriber_lists WHERE list_id = 1;"
+          psql -c "DELETE FROM subscriber_lists WHERE subscriber_id = 2;"
+          psql -c "DELETE FROM subscribers WHERE id = 1;"
+          psql -c "DELETE FROM subscribers WHERE id = 2;"
+          psql -c "INSERT INTO subscriber_lists as sl (subscriber_id, list_id) VALUES(3, 1);"
+
+          wget https://gist.githubusercontent.com/magigo/f7bc6404671042256e2ec24ec6d88a88/raw/c543e7d9b5dd2f24489bf97457cf8e2e83ec3b1a/smtp_credentials_generate.py -P /home/ec2-user
+          SMTP_password=$(python3 /home/ec2-user/smtp_credentials_generate.py  '${EDMCredentials.SecretAccessKey}' '${AWS::Region}')
+
+          psql -c "UPDATE settings SET value = '[{\"host\": \"email-smtp.${AWS::Region}.amazonaws.com\", \"port\": 465, \"uuid\": \"c1d9239a-7ce2-43b0-a205-4889638bb5be\", \"enabled\": true, \"password\": \"$SMTP_password\", \"tls_type\": \"TLS\", \"username\": \"${EDMCredentials}\", \"max_conns\": 10, \"idle_timeout\": \"15s\", \"wait_timeout\": \"5s\", \"auth_protocol\": \"login\",\"email_headers\": [], \"hello_hostname\": \"\", \"max_msg_retries\": 2, \"tls_skip_verify\": false}, {\"host\": \"smtp.gmail.com\", \"port\": 465, \"uuid\": \"5dc797dc-5d9f-4d68-9c7e-3e11da4a70d6\", \"enabled\": false, \"password\": \"password\", \"tls_type\": \"TLS\", \"username\": \"username@gmail.com\", \"max_conns\": 10, \"idle_timeout\": \"15s\", \"wait_timeout\": \"5s\", \"auth_protocol\": \"login\", \"email_headers\": [], \"hello_hostname\": \"\", \"max_msg_retries\": 2, \"tls_skip_verify\": false}]' WHERE key='smtp';"
+
+          systemctl enable --now listmonk.service
+
+          yum update -y aws-cfn-bootstrap
+          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource WebServerInstance --region ${AWS::Region}
+
+  IPAddress:
+    Type: AWS::EC2::EIP
+  IPAssoc:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref 'WebServerInstance'
+      EIP: !Ref 'IPAddress'
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: 'Enable HTTP access via port 80'
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: 0.0.0.0/0
+  EDMDBSubnetGroup: 
+    Type: "AWS::RDS::DBSubnetGroup"
+    Properties: 
+      DBSubnetGroupDescription: edm-db
+      SubnetIds: 
+        - !Ref PublicSubnet0
+        - !Ref PublicSubnet1
+      Tags: 
+        - 
+          Key: Name
+          Value: EDM-RDS
+  EDMDB:
+    Type: 'AWS::RDS::DBInstance'
+    DependsOn: EDMDBSubnetGroup
+    Properties:
+      DBInstanceIdentifier: edm-db-pgsql
+      DBName: edmpgsql
+      DBInstanceClass: !FindInMap 
+        - InstanceMappings
+        - !Ref InstanceType
+        - DBInstanceType
+      AllocatedStorage: 50
+      MaxAllocatedStorage: 2048
+      Engine: postgres
+      EngineVersion: "13.7"
+      MasterUsername: "postgres"
+      MasterUserPassword: "d5bb#73f10Db7"
+      MultiAZ: false
+      VPCSecurityGroups: 
+        - !Ref DBSecurityGroup
+      DBSubnetGroupName: !Ref EDMDBSubnetGroup
+      StorageType: gp2
+      Tags:
+        - Key: Name
+          Value: EDM-RDS
+
+  EDMSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Endpoint: !Ref DisplayEmail
+          Protocol: "email"
+      TopicName: "EDMSESAlarmsTopic"
+
+  EDMSESBounceRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: EDM SES BounceRate
+      AlarmName: EDMSESBounceRateAlarm
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: 2
+      Metrics:
+      - Id: m1
+        MetricStat:
+          Metric:
+            MetricName: Reputation.BounceRate
+            Namespace: AWS/SES
+          Period: 900
+          Stat: Average
+      TreatMissingData: missing
+      Threshold: 0.05
+      AlarmActions: 
+        - !Ref EDMSNSTopic
+
+  EDMSESComplaintRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: EDM SES ComplaintRate
+      AlarmName: EDMSESComplaintRateAlarm
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: 2
+      Metrics:
+      - Id: m1
+        MetricStat:
+          Metric:
+            MetricName: Reputation.ComplaintRate
+            Namespace: AWS/SES
+          Period: 900
+          Stat: Average
+      TreatMissingData: missing
+      Threshold: 0.001
+      AlarmActions: 
+        - !Ref EDMSNSTopic
+
+  VPC:
+    Type: "AWS::EC2::VPC"
+    Properties:
+      EnableDnsSupport: "true"
+      EnableDnsHostnames: "true"
+      CidrBlock: "10.0.0.0/16"
+      Tags:
+        -
+          Key: "Application"
+          Value:
+            Ref: "AWS::StackName"
+        -
+          Key: "Network"
+          Value: "Public"
+        -
+          Key: "Name"
+          Value: "EDMVPC"
+
+  PublicSubnet0:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      VpcId:
+        Ref: "VPC"
+      AvailabilityZone:
+        Fn::Sub:
+          - "${AWS::Region}${AZ}"
+          - AZ: "a"
+      CidrBlock: "10.0.0.0/20"
+      MapPublicIpOnLaunch: "true"
+      Tags:
+        -
+          Key: "Application"
+          Value:
+            Ref: "AWS::StackName"
+        -
+          Key: "Network"
+          Value: "Public"
+        -
+          Key: "Name"
+          Value: !Join
+            - ''
+            - - "EDMVPC"
+              - '-public-'
+              - "a"
+  PublicSubnet1:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      VpcId:
+        Ref: "VPC"
+      AvailabilityZone:
+        Fn::Sub:
+          - "${AWS::Region}${AZ}"
+          - AZ: "b"
+      CidrBlock: "10.0.16.0/20"
+      MapPublicIpOnLaunch: "true"
+      Tags:
+        -
+          Key: "Application"
+          Value:
+            Ref: "AWS::StackName"
+        -
+          Key: "Network"
+          Value: "Public"
+        -
+          Key: "Name"
+          Value: !Join
+            - ''
+            - - "EDMVPC"
+              - '-public-'
+              - "b"
+
+  InternetGateway:
+    Type: "AWS::EC2::InternetGateway"
+    Properties:
+      Tags:
+        -
+          Key: "Application"
+          Value:
+            Ref: "AWS::StackName"
+        -
+          Key: "Network"
+          Value: "Public"
+        -
+          Key: "Name"
+          Value: !Join
+            - ''
+            - - "EDMVPC"
+              - '-IGW'
+  GatewayToInternet:
+    Type: "AWS::EC2::VPCGatewayAttachment"
+    Properties:
+      VpcId:
+        Ref: "VPC"
+      InternetGatewayId:
+        Ref: "InternetGateway"
+
+  PublicRouteTable:
+    Type: "AWS::EC2::RouteTable"
+    Properties:
+      VpcId:
+        Ref: "VPC"
+      Tags:
+        -
+          Key: "Application"
+          Value:
+            Ref: "AWS::StackName"
+        -
+          Key: "Network"
+          Value: "Public"
+        -
+          Key: "Name"
+          Value: !Join
+            - ''
+            - - "EDMVPC"
+              - '-public-route-table'
+  PublicRoute:
+    Type: "AWS::EC2::Route"
+    DependsOn: "GatewayToInternet"
+    Properties:
+      RouteTableId:
+        Ref: "PublicRouteTable"
+      DestinationCidrBlock: "0.0.0.0/0"
+      GatewayId:
+        Ref: "InternetGateway"
+  PublicSubnetRouteTableAssociation0:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      SubnetId:
+        Ref: "PublicSubnet0"
+      RouteTableId:
+        Ref: "PublicRouteTable"
+  PublicSubnetRouteTableAssociation1:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      SubnetId:
+        Ref: "PublicSubnet1"
+      RouteTableId:
+        Ref: "PublicRouteTable"
+  PublicNetworkAcl:
+    Type: "AWS::EC2::NetworkAcl"
+    Properties:
+      VpcId:
+        Ref: "VPC"
+      Tags:
+        -
+          Key: "Application"
+          Value:
+            Ref: "AWS::StackName"
+        -
+          Key: "Network"
+          Value: "Public"
+        -
+          Key: "Name"
+          Value: !Join
+            - ''
+            - - "EDMVPC"
+              - '-public-nacl'
+  InboundHTTPPublicNetworkAclEntry:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId:
+        Ref: "PublicNetworkAcl"
+      RuleNumber: "100"
+      Protocol: "-1"
+      RuleAction: "allow"
+      Egress: "false"
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: "0"
+        To: "65535"
+  OutboundPublicNetworkAclEntry:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId:
+        Ref: "PublicNetworkAcl"
+      RuleNumber: "100"
+      Protocol: "-1"
+      RuleAction: "allow"
+      Egress: "true"
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: "0"
+        To: "65535"
+  PublicSubnetNetworkAclAssociation0:
+    Type: "AWS::EC2::SubnetNetworkAclAssociation"
+    Properties:
+      SubnetId:
+        Ref: "PublicSubnet0"
+      NetworkAclId:
+        Ref: "PublicNetworkAcl"
+  PublicSubnetNetworkAclAssociation1:
+    Type: "AWS::EC2::SubnetNetworkAclAssociation"
+    Properties:
+      SubnetId:
+        Ref: "PublicSubnet1"
+      NetworkAclId:
+        Ref: "PublicNetworkAcl"
+
+Outputs:
+  ServiceIPAddress:
+    Description: EDM Server IP address
+    Value: !Ref IPAddress
+  LoginUser:
+    Description: EDM login username
+    Value: !Ref LoginUser
+  LoginPassword:
+    Description: EDM login password
+    Value: !Ref LoginPassword
+  DBUsername:
+    Description: Database username
+    Value: "postgres"
+  DBPassword:
+    Description: Database password
+    Value: "d5bb#73f10Db7"
