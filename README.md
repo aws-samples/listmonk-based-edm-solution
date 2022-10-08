@@ -50,14 +50,14 @@ This stack use cloudformation file to provide configuration values.
 You can customize your parameters via cloudfromation console
 
 ## Deployment
-You can jump to the cloudformation [launch console](resource/listmonk-based-edm-solution.yaml)
+You can use the cloudformation [template](https://github.com/aws-samples/listmonk-based-edm-solution/blob/main/listmonk-based-edm-solution.yaml)
 
 ## Clean up
 
 Go to your cloudfromation console to delete the stack. 
 
 ### [Listmonk](https://github.com/knadh/listmonk)  
-Source: [https://github.com/knadh/listmonk] 
+Source: https://github.com/knadh/listmonk
 
 License: https://github.com/knadh/listmonk/blob/master/LICENSE
 
