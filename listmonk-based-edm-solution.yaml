@@ -282,6 +282,7 @@ Resources:
         - Endpoint: !Ref DisplayEmail
           Protocol: "email"
       TopicName: "EDMSESAlarmsTopic"
+      KmsMasterKeyId: 'alias/aws/sns'
 
   EDMSESBounceRateAlarm:
     Type: AWS::CloudWatch::Alarm
