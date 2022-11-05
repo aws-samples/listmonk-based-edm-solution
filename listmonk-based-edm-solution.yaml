@@ -1,16 +1,6 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: Amazon Simple Email Service based EDM solution
-Mappings:
-  InstanceMappings:
-    t3.micro:
-      DBInstanceType: db.t3.micro
-        
-    t3.small:
-      DBInstanceType: db.t3.small
 
-    c5.xlarge:
-      DBInstanceType: db.t3.medium
-        
 Metadata:
   'AWS::CloudFormation::Interface':
     ParameterGroups:
@@ -26,6 +16,7 @@ Metadata:
           default: Keep Default
         Parameters:
           - LatestAmiId
+
 Parameters:
   InstanceType:
     Type: String
@@ -48,6 +39,7 @@ Parameters:
     Type: String
     Default: admin
   LoginPassword:
+    NoEcho: true
     Type: String
     Default: admin
 
@@ -545,3 +537,13 @@ Outputs:
   DBPassword:
     Description: Database password
     Value: "d5bb#73f10Db7"
+
+Mappings:
+  InstanceMappings:
+    t3.micro:
+      DBInstanceType: db.t3.micro
+    t3.small:
+      DBInstanceType: db.t3.small
+    c5.xlarge:
+      DBInstanceType: db.t3.medium
+        
