@@ -83,12 +83,39 @@ Resources:
           FromPort: 22
           ToPort: 22
           CidrIp: 0.0.0.0/0
+  Instance1InstanceRoleBC4D05C6:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+        Version: "2012-10-17"
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: 'secretsmanager:GetSecretValue'
+                Resource: !Ref MyRDSInstanceSecret
+  Instance1InstanceProfileC04770B7:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - Ref: Instance1InstanceRoleBC4D05C6
+
   WebServerInstance:
     Type: AWS::EC2::Instance
     CreationPolicy: # <--- creation policy with timeout of 15 minutes
       ResourceSignal:
         Timeout: PT15M
     Properties:
+      IamInstanceProfile:
+        Ref: Instance1InstanceProfileC04770B7
       ImageId: !Ref LatestAmiId
       InstanceType: !Ref InstanceType
       SubnetId: !Ref PublicSubnet0
@@ -107,6 +134,21 @@ Resources:
         Fn::Base64: 
           !Sub |
           #!/bin/bash -xe
+
+          /bin/mkdir /home/ec2-user/.aws
+          tee -a /home/ec2-user/.aws/config > /dev/null  << EOF
+          [default]
+          output = json
+          region = ${AWS::Region}
+          EOF
+
+          yum install jq -y
+
+          secretarn=${MyRDSInstanceSecret}
+          secretname=$(echo $secretarn | cut -d ":" -f7 |rev| cut -c 8-100 | rev)
+          echo $secretname
+          dbpassword=$(aws secretsmanager get-secret-value --region ${AWS::Region} --secret-id $secretname --query SecretString --output text | jq -r .password)
+          # echo $dbpassword
 
           tee -a /home/ec2-user/config.toml > /dev/null  << EOT
           [app]
@@ -128,7 +170,7 @@ Resources:
           host = "${EDMDB.Endpoint.Address}"
           port = 5432
           user = "postgres"
-          password = "d5bb#73f10Db7"
+          password = "$dbpassword"
 
           # Ensure that this database has been created in Postgres.
           database = "listmonk"
@@ -191,8 +233,8 @@ Resources:
 
           export PGHOST=${EDMDB.Endpoint.Address}
           export PGPORT=5432
-          export PGPASSWORD=d5bb#73f10Db7
           export PGUSER=postgres
+          export PGPASSWORD=$dbpassword
           
           psql -c "CREATE DATABASE listmonk"
           /home/ec2-user/listmonk --install --yes --config /home/ec2-user/config.toml
@@ -220,6 +262,7 @@ Resources:
 
           yum update -y aws-cfn-bootstrap
           /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource WebServerInstance --region ${AWS::Region}
+
 
   IPAddress:
     Type: AWS::EC2::EIP
@@ -250,6 +293,16 @@ Resources:
         - 
           Key: Name
           Value: EDM-RDS
+  MyRDSInstanceSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: 'This is the secret for my RDS instance'
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "postgres"}'
+        GenerateStringKey: 'password'
+        PasswordLength: 16
+        ExcludeCharacters: '"@/\'
+
   EDMDB:
     Type: 'AWS::RDS::DBInstance'
     DependsOn: EDMDBSubnetGroup
@@ -264,8 +317,8 @@ Resources:
       MaxAllocatedStorage: 2048
       Engine: postgres
       EngineVersion: "13.7"
-      MasterUsername: "postgres"
-      MasterUserPassword: "d5bb#73f10Db7"
+      MasterUsername: !Join ['', ['{{resolve:secretsmanager:', !Ref MyRDSInstanceSecret, ':SecretString:username}}' ]]
+      MasterUserPassword: !Join ['', ['{{resolve:secretsmanager:', !Ref MyRDSInstanceSecret, ':SecretString:password}}' ]]
       MultiAZ: false
       VPCSecurityGroups: 
         - !Ref DBSecurityGroup
@@ -532,12 +585,6 @@ Outputs:
   LoginPassword:
     Description: EDM login password
     Value: !Ref LoginPassword
-  DBUsername:
-    Description: Database username
-    Value: "postgres"
-  DBPassword:
-    Description: Database password
-    Value: "d5bb#73f10Db7"
 
 Mappings:
   InstanceMappings:
