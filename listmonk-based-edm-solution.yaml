@@ -327,7 +327,6 @@ Resources:
       Tags:
         - Key: Name
           Value: EDM-RDS
-
   EDMSNSTopic:
     Type: AWS::SNS::Topic
     Properties:
@@ -336,7 +335,6 @@ Resources:
           Protocol: "email"
       TopicName: "EDMSESAlarmsTopic"
       KmsMasterKeyId: 'alias/aws/sns'
-
   EDMSESBounceRateAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
